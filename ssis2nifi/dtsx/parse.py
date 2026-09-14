@@ -147,6 +147,7 @@ def _columns(port_el: ET.Element, tag: str) -> list[OutputColumn]:
                 external_metadata_id=c.get("externalMetadataColumnId", ""),
                 error_row_disposition=c.get("errorRowDisposition", ""),
                 truncation_row_disposition=c.get("truncationRowDisposition", ""),
+                properties=_props(c.find("properties")),
             )
         )
     return cols
@@ -359,11 +360,19 @@ def parse_file(path: str) -> Package:
         ref = cm.get(f"{DTS}refId", "")
         obj = cm.find(f"{DTS}ObjectData")
         inner: dict[str, str] = {}
+        columns: list[dict[str, str]] = []
         if obj is not None and len(obj):
-            inner = {k.split("}")[-1]: v for k, v in list(obj)[0].attrib.items()}
+            node = list(obj)[0]
+            inner = {k.split("}")[-1]: v for k, v in node.attrib.items()}
+            # A flat file's per-column delimiters live here. Without them the
+            # row delimiter cannot be recovered when RowDelimiter is empty,
+            # which it is in every package in the corpus.
+            for col in node.findall(f"{DTS}FlatFileColumns/{DTS}FlatFileColumn"):
+                columns.append({k.split("}")[-1]: v for k, v in col.attrib.items()})
         pkg.connections.append(
             ConnectionManager(id="cm." + _slug(ref), ref_id=ref, kind=_connection_kind(creation),
-                              creation_name=creation, properties={**cm_props, **inner})
+                              creation_name=creation, properties={**cm_props, **inner},
+                              columns=columns)
         )
 
     for v in root.findall(f"{DTS}Variables/{DTS}Variable"):

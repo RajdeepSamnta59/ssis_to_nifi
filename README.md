@@ -13,11 +13,25 @@ For the pictures, see [`DIAGRAM.md`](DIAGRAM.md).
 
 ## Status
 
-**Milestones 1–2 of 5 done.** The Analyzer reads genuine Visual Studio packages,
-recovers the data flow graph, resolves column lineage, and reports exactly what
-it can and cannot convert. The IR round-trips losslessly, so it can be reviewed,
-edited, and fed to the Converter — which is next (M3: emit a `flow.json` NiFi
-accepts).
+**Milestones 1–3 of 5 done. A real SSIS package now becomes a running-shaped
+NiFi flow.**
+
+```
+$ make convert && make verify-import
+wrote out/L1.flow.json
+  5 processors, 9 connections, 5 controller services
+  1 sensitive property left null; see L1.secrets.json
+  note: lookup_currency_key.Lookup No Match Output: unwired in SSIS and
+        fail_component; routed to the reject sink rather than dropped
+...
+valid: NiFi accepted the flow with no flow-level validation errors
+```
+
+Verified against Apache NiFi 1.27.0. The check is non-destructive — the flow is
+imported into a new process group and deleted afterwards, so it can run against
+an instance that is already busy.
+
+Next: M4 (deploy and load real rows) and M5 (the behavioural gate).
 
 ```bash
 python3 -m ssis2nifi analyze corpus/packages/L1.dtsx
@@ -47,6 +61,8 @@ coverage: 4/4 convertible, 0 need manual review
 ```bash
 make analyze FILE=corpus/packages/L1.dtsx   # the report above
 make ir      FILE=corpus/packages/L1.dtsx   # write out/<pkg>.ir.yaml
+make convert FILE=corpus/packages/L1.dtsx   # write out/<pkg>.flow.json
+make verify-import                          # import into a live NiFi, check validity
 make corpus                                 # run every package, show exit codes
 make test                                   # the suite, in Docker
 ```
@@ -74,6 +90,40 @@ Two digests, because they answer different questions:
 
 The second exists because of a correction worth knowing about — see
 [`corpus/PROVENANCE.md`](corpus/PROVENANCE.md).
+
+## What the generated flow looks like
+
+`Microsoft.Lookup` becomes `LookupRecord` + `DatabaseRecordLookupService`, and
+SSIS's branch names become NiFi relationships:
+
+```
+Extract Sample Currency Data --success--> Lookup Currency Key
+Lookup Currency Key        --matched--> Lookup Date Key
+Lookup Date Key            --matched--> Sample OLE DB Destination
+                         --unmatched--> Rejected rows
+                           --failure--> Rejected rows
+```
+
+Two properties hold by construction, and both are tested:
+
+**No silent row loss.** An output SSIS left unwired is not auto-terminated when
+SSIS would have failed on it. `NoMatchBehavior=0` means a miss fails the whole
+data flow, so those rows go to a visible reject sink. Auto-terminating would
+give identical row counts on the happy path and opposite behaviour when it
+matters — see picture 5 in [`DIAGRAM.md`](DIAGRAM.md).
+
+**No secrets in the artifact.** Sensitive properties are emitted as `null` (what
+NiFi's own export does) and the environment variable that supplies each one is
+recorded in a `.secrets.json` sidecar. The flow is safe to commit.
+
+## Determinism
+
+Every identifier is `uuid5` of the SSIS `refId` that produced it, never `uuid4`.
+So the same package always produces byte-identical JSON — golden-file tests
+work, a catalogue change shows as a readable diff rather than 40 churned UUIDs,
+and **the refId is the provenance key**: given a processor on a canvas you can
+compute which SSIS component it came from. Each processor's `comments` carries
+its source refId and the rule that generated it.
 
 ## Exit codes are a contract
 

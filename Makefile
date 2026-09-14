@@ -6,12 +6,14 @@
 
 PY      ?= python3
 PKG     ?= python:3.12-slim
-FILE    ?= corpus/packages/L1.dtsx
+FILE     ?= corpus/packages/L1.dtsx
+BINDINGS ?= bindings/L1.bindings.yml
+NIFI     ?= http://localhost:8080
 CORPUS  := corpus/packages
 
 .DEFAULT_GOAL := help
 
-.PHONY: help analyze ir corpus test json clean
+.PHONY: help analyze ir convert verify-import corpus test json clean
 
 help:  ## list these targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
@@ -29,6 +31,14 @@ ir:  ## write the IR: make ir FILE=corpus/packages/L4.dtsx
 	@mkdir -p out
 	@$(PY) -m ssis2nifi ir $(FILE) -o out/$$(basename $(FILE) .dtsx).ir.yaml; \
 	  c=$$?; [ $$c -eq 3 ] && exit 0 || exit $$c
+
+convert:  ## generate a flow: make convert FILE=... BINDINGS=bindings/L1.bindings.yml
+	@mkdir -p out
+	@$(PY) -m ssis2nifi convert $(FILE) -b $(BINDINGS); \
+	  c=$$?; [ $$c -eq 3 ] && exit 0 || exit $$c
+
+verify-import:  ## import the generated flow into a live NiFi and check it is valid
+	@$(PY) -m ssis2nifi verify out/$$(basename $(FILE) .dtsx).flow.json --nifi $(NIFI)
 
 corpus:  ## run every package and show its exit code
 	@printf "%-34s %-6s %s\n" PACKAGE EXIT RESULT

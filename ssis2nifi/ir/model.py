@@ -58,6 +58,10 @@ class ConnectionManager:
     kind: str                      # OLEDB | FLATFILE | ADONET | FILE | ...
     creation_name: str = ""
     properties: dict[str, str] = field(default_factory=dict)
+    # FLATFILE only: DTS:FlatFileColumns. The per-column delimiters live here,
+    # not on the component, and the LAST column's delimiter is really the row
+    # delimiter -- see catalog/derive.py.
+    columns: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -71,6 +75,11 @@ class OutputColumn:
     external_metadata_id: str = ""
     error_row_disposition: str = ""
     truncation_row_disposition: str = ""
+    # Column-level <properties>. Not decoration: a Lookup expresses its JOIN
+    # here (JoinToReferenceColumn on an input column) and which reference
+    # columns it returns (CopyFromReferenceColumn on an output column). The
+    # component-level properties of the same names are empty.
+    properties: dict[str, str] = field(default_factory=dict)
     # filled in by the lineage resolver: which component/output actually produced this
     lineage_resolved: dict[str, str] | None = None
 
@@ -101,6 +110,10 @@ class Component:
     inputs: list[Port] = field(default_factory=list)
     outputs: list[Port] = field(default_factory=list)
     designer: dict[str, float] | None = None
+    # Conclusions drawn from `properties` by catalog/derive.py. Recorded next
+    # to the raw values so a reviewer can check the reasoning, not just the
+    # answer -- e.g. reference_table alongside the SqlCommand it came from.
+    derived: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

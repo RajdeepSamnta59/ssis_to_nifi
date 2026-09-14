@@ -1,0 +1,29 @@
+# Deployment bindings for corpus/packages/L1.dtsx
+#
+# An SSIS connection manager says "localhost, AdventureWorksDW2014, Integrated
+# Security=SSPI". None of that survives a move to NiFi: Windows integrated
+# security has no JDBC equivalent, and "localhost" means a different machine.
+# So the package says WHICH logical connection a component uses, and this file
+# says what that resolves to at deploy time.
+#
+# This is not a workaround. It is exactly what SSIS project configurations and
+# environment references do, and saying so plainly is better than pretending a
+# package is portable when it is not.
+#
+# NO SECRETS HERE. `password_ref` names an environment variable; the value is
+# never written into the bindings file or the generated flow.json.
+
+bindings:
+  db_main:
+    for: "Package.ConnectionManagers[localhost.AdventureWorksDW2014]"
+    db_type: "MS SQL 2012+"
+    url: "jdbc:sqlserver://mssql:1433;databaseName=AdventureWorksDW2014;encrypt=false"
+    driver_class: "com.microsoft.sqlserver.jdbc.SQLServerDriver"
+    driver_path: "/opt/nifi/drivers/mssql-jdbc.jar"
+    user: "sa"
+    password_ref: "SSIS2NIFI_DB_MAIN_PASSWORD"
+
+  input_file:
+    for: "Package.ConnectionManagers[Sample Flat File Source Data]"
+    directory: "/opt/nifi/data/landing"
+    file_filter: ".*\\.txt"

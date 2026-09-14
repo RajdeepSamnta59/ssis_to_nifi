@@ -6,8 +6,10 @@ import pathlib
 
 import pytest
 
+from ssis2nifi.catalog.derive import derive
 from ssis2nifi.catalog.support import annotate
 from ssis2nifi.dtsx.parse import parse_file
+from ssis2nifi.emit import flowdef
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 CORPUS = ROOT / "corpus" / "packages"
@@ -18,8 +20,13 @@ NEGATIVE = {"negative_synthetic.dtsx", "negative_synthetic_wellformed.dtsx"}
 
 
 def analyze(path) -> "object":
-    """Parse + annotate: what the CLI does, so tests see the same object."""
-    return annotate(parse_file(str(path)))
+    """Parse + annotate + derive: what the CLI does, so tests see the same object."""
+    return derive(annotate(parse_file(str(path))))
+
+
+def converted(path, bindings_path):
+    """Full pipeline through to a flow definition. Offline, no NiFi."""
+    return flowdef.build(analyze(path), flowdef.load_bindings(str(bindings_path)))
 
 
 def real_packages() -> list[pathlib.Path]:
