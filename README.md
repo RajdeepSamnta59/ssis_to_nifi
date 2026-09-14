@@ -13,27 +13,38 @@ For the pictures, see [`DIAGRAM.md`](DIAGRAM.md).
 
 ## Status
 
-**Milestones 1–4 of 5 done. A real SSIS package now becomes a NiFi flow that
-loads real rows.**
+**All 5 milestones done.** A real SSIS package becomes a NiFi flow, NiFi
+accepts it, and an independently computed expectation — not the tool grading
+its own homework — agrees with what actually landed.
 
 ```
-$ make convert && make deploy && make feed
-$ make check
- rows_loaded | rejected
--------------+----------
-          30 |        8
+$ make verify-behavior
+reading 2 reference table(s) directly (not through the lookup service)
+  dbo.dimcurrency: 3 row(s)
+  dbo.dimdate: 14 row(s)
+batch: 12 rows -> 6 expected landed, 6 expected rejected
+...
+actual: 6 landed, 6 rejected
+agrees: every row landed or was rejected exactly where the independent
+        check expected
 ```
 
-38 input rows: 30 matched both lookups and landed in the fact table with
-correctly resolved surrogate keys; 8 missed the currency lookup and went to the
-reject sink. Every input row is accounted for — which is the whole point.
+`verify-behavior` reads each Lookup's reference table with a plain `SELECT` —
+code that shares nothing with `emit/flowdef.py` or with NiFi's own
+`DatabaseRecordLookupService` — reproduces the match/no-match decision itself,
+then feeds a batch engineered to hit every cell of the disposition matrix
+(DIAGRAM.md picture 5) through the real, deployed flow and diffs the two
+answers row for row. See [*What M5 actually caught*](#what-m5-actually-caught)
+below — it found a real bug on the first run.
 
-Verified end to end against Apache NiFi 1.27.0 and Postgres 16.
+Earlier, smaller runs are still true: 38 arbitrary input rows produced 30
+landed / 8 rejected with correctly resolved surrogate keys, verified end to
+end against Apache NiFi 1.27.0 and Postgres 16.
 
 ```
 $ make convert && make verify-import
 wrote out/L1.flow.json
-  5 processors, 9 connections, 5 controller services
+  6 processors, 10 connections, 6 controller services
   1 sensitive property left null; see L1.secrets.json
   note: lookup_currency_key.Lookup No Match Output: unwired in SSIS and
         fail_component; routed to the reject sink rather than dropped
@@ -44,8 +55,39 @@ valid: NiFi accepted the flow with no flow-level validation errors
 `make verify-import` is non-destructive — the flow goes into a new process group
 and is deleted afterwards, so it can run against a busy instance.
 
-Next: M5, the behavioural gate — diffing the generated flow's output against an
-independent expectation.
+## What M5 actually caught
+
+The first real run of the behavioural gate found a genuine silent-row-loss
+bug, not a test-harness bug — the exact failure mode DIAGRAM.md picture 5
+exists to prevent, discovered by *triggering* it rather than by reading the
+property descriptors.
+
+**The bug.** Every dangling output in a package — regardless of which
+component or which lookup it came from — was wired to one shared `PutFile`
+processor writing `Directory/${filename}` with `Conflict Resolution
+Strategy: replace`. Feed a batch that misses **two different** lookups from
+the **same source file**, and both rejections try to write the same path.
+Whichever one runs second silently replaces the first — no error, no
+bulletin, nothing in the logs. A batch of 12 engineered to hit every branch
+of the disposition matrix showed it immediately: 3 rows that should have been
+rejected at the currency lookup were in neither the fact table nor the reject
+file. Gone, with the flow reporting no problem at all.
+
+**The fix.** A small `UpdateAttribute` ("Make reject filename unique") now
+sits between every dangling output and the shared sink, stamping
+`filename` to `${filename}-${uuid}` before the write — using the FlowFile's
+own `uuid` attribute, which NiFi already guarantees is unique, so there is no
+new state to track. Two lookups missing on one file now produce two reject
+files instead of one file with half its rows missing. Re-running the same 12
+row batch afterwards: `6 landed, 6 rejected`, and the independent oracle
+agrees with all twelve.
+
+**Why Tier 3 didn't catch this.** The flow was, and remained, perfectly
+*valid* the whole time — no processor was ever in an invalid state, because
+NiFi has no way to know two of your relationships happen to write the same
+file. Validity and correctness are different claims; this is the difference
+Tier 4 exists to catch, and the reason M5 is not optional polish on top of
+M1–M4.
 
 ## Retargeting is a bindings edit, not a code change
 
@@ -107,6 +149,8 @@ make analyze FILE=corpus/packages/L1.dtsx   # the report above
 make ir      FILE=corpus/packages/L1.dtsx   # write out/<pkg>.ir.yaml
 make convert FILE=corpus/packages/L1.dtsx   # write out/<pkg>.flow.json
 make verify-import                          # import into a live NiFi, check validity
+make deploy                                 # import, inject secrets, start
+make verify-behavior                        # M5: feed a batch, diff against an independent oracle
 make corpus                                 # run every package, show exit codes
 make test                                   # the suite, in Docker
 ```

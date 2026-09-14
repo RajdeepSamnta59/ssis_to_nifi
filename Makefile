@@ -12,10 +12,15 @@ NIFI     ?= http://localhost:8080
 NIFI_CONTAINER ?= nifi-engine
 WAREHOUSE ?= nifi-warehouse
 CORPUS  := corpus/packages
+# Host paths the two bind-mounted directories `bindings/L1.bindings.yml` and
+# the reject sink resolve to -- see NIFI-FLOW's docker-compose.yml (./data
+# maps to /opt/nifi/data), not something ssis2nifi owns or starts.
+LANDING  ?= $(HOME)/Desktop/NIFI-FLOW/data/ssis2nifi/landing
+REJECTS  ?= $(HOME)/Desktop/NIFI-FLOW/data/rejects
 
 .DEFAULT_GOAL := help
 
-.PHONY: help analyze ir convert verify-import deploy check corpus test json clean
+.PHONY: help analyze ir convert verify-import deploy check verify-behavior corpus test json clean
 
 help:  ## list these targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
@@ -51,6 +56,12 @@ check:  ## rows loaded vs rejected, after a feed
 	  "select (select count(*) from dbo.newfactcurrencyrate) as rows_loaded;"
 	@docker exec $(NIFI_CONTAINER) sh -c \
 	  'echo "reject files: $$(ls -1 /opt/nifi/data/rejects 2>/dev/null | wc -l)"'
+
+verify-behavior:  ## M5: feed a batch, check it against an independent expectation
+	@$(PY) -m ssis2nifi verify-behavior $(FILE) -b $(BINDINGS) \
+	  --landing $(LANDING) --reject-dir $(REJECTS) \
+	  --container $(WAREHOUSE) --db ssis2nifi --user etl \
+	  --fact-table dbo.newfactcurrencyrate --wait 15
 
 corpus:  ## run every package and show its exit code
 	@printf "%-34s %-6s %s\n" PACKAGE EXIT RESULT

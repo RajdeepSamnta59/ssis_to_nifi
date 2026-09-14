@@ -415,6 +415,46 @@ def build(pkg: Package, bindings: dict, group_name: str | None = None) -> dict:
             names[reject_id] = "Rejected rows"
         return reject_id
 
+    # PutFile writes to Directory/${filename}, and every dangling output in
+    # a package routes into the SAME shared sink with "replace" conflict
+    # resolution. Two different lookups missing on the SAME source file
+    # therefore both want to write .../rejects/<source filename> -- the
+    # second write silently replaces the first, and everything it carried is
+    # gone with no error anywhere. Caught by `make verify-behavior`, which
+    # feeds a batch designed to miss two different lookups from one file:
+    # the first lookup's rejects vanished from both the reject sink and the
+    # fact table. This stamp makes every reject write's filename unique
+    # (NiFi gives every FlowFile a `uuid` attribute already; no new state to
+    # track) so "replace" only ever replaces a write with itself.
+    stamp_id: str | None = None
+
+    def reject_stamp() -> str:
+        nonlocal stamp_id
+        if stamp_id is None:
+            ptype, bundle = b._proc_type("UpdateAttribute")
+            stamp_id = _ident("processor", "reject-stamp")
+            b.processors.append({
+                "identifier": stamp_id, "name": "Make reject filename unique",
+                "comments": "Two different outputs redirecting to the same reject sink from "
+                            "the same source file must not overwrite each other's write.",
+                "type": ptype, "bundle": bundle,
+                "position": {"x": 400.0, "y": 800.0},
+                "properties": {"filename": "${filename}-${uuid}"},
+                "propertyDescriptors": {}, "style": {},
+                "schedulingPeriod": "0 sec", "schedulingStrategy": "TIMER_DRIVEN",
+                "executionNode": "ALL", "penaltyDuration": "30 sec",
+                "yieldDuration": "1 sec", "bulletinLevel": "WARN",
+                "runDurationMillis": 0, "concurrentlySchedulableTaskCount": 1,
+                "autoTerminatedRelationships": [],
+                "retriedRelationships": [], "retryCount": 0,
+                "backoffMechanism": "PENALIZE_FLOWFILE", "maxBackoffPeriod": "30 secs",
+                "componentType": "PROCESSOR", "groupIdentifier": b.group_id,
+                "scheduledState": "ENABLED",
+            })
+            names[stamp_id] = "Make reject filename unique"
+            b._connect(stamp_id, names[stamp_id], ["success"], reject_sink(), "Rejected rows")
+        return stamp_id
+
     for df in pkg.dataflows:
         for dangling in df.dangling_outputs:
             target = b.rel.get((dangling.node, dangling.output))
@@ -443,7 +483,7 @@ def build(pkg: Package, bindings: dict, group_name: str | None = None) -> dict:
             pid, relationship = target
             if action == "route_to_reject":
                 b._connect(pid, names.get(pid, ""), [relationship],
-                           reject_sink(), "Rejected rows")
+                           reject_stamp(), "Make reject filename unique")
                 b.notes.append(
                     f"{dangling.node}.{dangling.output}: unwired in SSIS and "
                     f"{dangling.disposition}; routed to the reject sink rather than dropped"

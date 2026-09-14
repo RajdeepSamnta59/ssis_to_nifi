@@ -169,6 +169,15 @@ required property, unresolved service reference and bad bundle coordinate — th
 entire class of bug that otherwise gets found by a human staring at a red canvas
 during a demo.
 
+**Tier 4 caught something Tier 3 structurally cannot.** Two different dangling
+outputs shared one `PutFile` reject sink with `Conflict Resolution Strategy:
+replace`; a batch that missed two different lookups from the same source file
+showed one lookup's rejects silently overwritten by the other's — a flow that
+was valid the entire time, because NiFi has no way to know two relationships
+happen to write the same path. Only running real data through it and diffing
+against an independently computed answer surfaced it. See *What M5 actually
+caught* in [`README.md`](README.md).
+
 **Exit codes are a contract:** `0` fully convertible · `3` needs a human · `4`
 refused. `3` is non-zero on purpose — a pipeline must not be able to ship a
 half-translated package by accident.

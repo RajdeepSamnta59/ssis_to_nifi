@@ -16,6 +16,7 @@ import argparse
 import json
 import pathlib
 import sys
+import time
 
 from .catalog.derive import derive
 from .catalog.support import annotate
@@ -130,6 +131,77 @@ def _cmd_deploy(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_verify_behavior(args: argparse.Namespace) -> int:
+    """M5: feed a real batch through the live flow, check it against an
+    independently computed expectation -- not just that the flow is valid.
+    """
+    from .validate import behavior, oracle
+
+    try:
+        pkg = derive(annotate(parse_file(args.package)))
+    except NotADtsxPackage as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+
+    bindings = flowdef.load_bindings(args.bindings)
+    db_binding = next((b for b in bindings.values() if "identifier_case" in b), None)
+    if db_binding is None:
+        print("bindings file has no db binding (needs identifier_case)", file=sys.stderr)
+        return EXIT_REFUSED
+
+    fold = db_binding.get("identifier_case", "")
+    lookups = oracle.lookups_from_package(pkg, fold)
+    if not lookups:
+        print("no lookups in this package -- nothing for the behavioural gate to check",
+              file=sys.stderr)
+        return EXIT_OK
+
+    print(f"reading {len(lookups)} reference table(s) directly (not through the lookup service)",
+          file=sys.stderr)
+    references = {}
+    for lk in lookups:
+        references[lk["reference_table"]] = behavior.read_reference_table(
+            args.container, args.db, args.user, lk["reference_table"],
+            lk["join_column"], lk["returns"])
+        print(f"  {lk['reference_table']}: {len(references[lk['reference_table']])} row(s)",
+              file=sys.stderr)
+
+    rows = behavior.make_batch()
+    expected = oracle.compute(rows, lookups, references)
+    print(f"batch: {len(rows)} rows -> "
+          f"{sum(1 for r in expected if r['outcome']=='landed')} expected landed, "
+          f"{sum(1 for r in expected if r['outcome']=='rejected')} expected rejected",
+          file=sys.stderr)
+
+    ff = next(c for c in pkg.dataflows[0].components if c.derived.get("columns"))
+    d = ff.derived
+    columns = [c["name"] for c in d["columns"]]
+    filename = f"verify-behavior-{int(time.time())}.txt"
+    landing = pathlib.Path(args.landing)
+    landing.mkdir(parents=True, exist_ok=True)
+    behavior.write_flat_file(rows, columns, d["column_delimiter"], d["row_delimiter"],
+                              landing / filename)
+    print(f"wrote {landing / filename}", file=sys.stderr)
+
+    print(f"waiting {args.wait}s for NiFi to process it...", file=sys.stderr)
+    time.sleep(args.wait)
+
+    landed = behavior.read_landed_rows(args.container, args.db, args.user, args.fact_table)
+    rejected = behavior.read_rejected_rows(pathlib.Path(args.reject_dir), filename)
+
+    report = behavior.diff(expected, landed, rejected)
+    print(f"actual: {report['actual_landed']} landed, {report['actual_rejected']} rejected")
+    if report["agrees"]:
+        print("agrees: every row landed or was rejected exactly where the "
+              "independent check expected")
+        return EXIT_OK
+
+    print(f"{len(report['mismatches'])} mismatch(es):", file=sys.stderr)
+    for m in report["mismatches"]:
+        print(f"  - {m}", file=sys.stderr)
+    return EXIT_REVIEW
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="ssis2nifi", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -166,6 +238,22 @@ def main(argv: list[str] | None = None) -> int:
     dp.add_argument("--group-name")
     dp.add_argument("--no-start", action="store_true", help="import but leave stopped")
     dp.set_defaults(func=_cmd_deploy)
+
+    vb = sub.add_parser("verify-behavior",
+                         help="feed a batch through the live flow, check it against an "
+                              "independently computed expectation")
+    vb.add_argument("package")
+    vb.add_argument("-b", "--bindings", required=True)
+    vb.add_argument("--landing", required=True, help="host path the source connection manager's "
+                     "directory is bind-mounted to")
+    vb.add_argument("--reject-dir", required=True, help="host path the reject sink's "
+                     "directory is bind-mounted to")
+    vb.add_argument("--container", default="nifi-warehouse", help="Postgres container name")
+    vb.add_argument("--db", required=True)
+    vb.add_argument("--user", required=True)
+    vb.add_argument("--fact-table", required=True, help="e.g. dbo.newfactcurrencyrate")
+    vb.add_argument("--wait", type=float, default=15.0, help="seconds to let NiFi process the batch")
+    vb.set_defaults(func=_cmd_verify_behavior)
 
     args = ap.parse_args(argv)
     return args.func(args)

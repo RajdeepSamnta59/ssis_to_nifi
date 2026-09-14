@@ -38,7 +38,7 @@ def test_identifiers_trace_back_to_the_ssis_component(flow):
     """Provenance: a processor on the canvas says which refId produced it."""
     doc, _, _ = flow
     for proc in doc["flowContents"]["processors"]:
-        if proc["name"] == "Rejected rows":
+        if proc["name"] in ("Rejected rows", "Make reject filename unique"):
             continue                       # synthesised, has no SSIS origin
         assert "Package\\" in proc["comments"], f"{proc['name']} has no source refId"
         assert "rule:" in proc["comments"]
@@ -144,6 +144,9 @@ def test_a_fail_component_no_match_output_is_routed_not_dropped(flow):
 
     Auto-terminating `unmatched` would discard those rows instead: identical
     row counts on the happy path, opposite behaviour when it matters.
+
+    Both misses route through "Make reject filename unique" first, not
+    straight to "Rejected rows" -- see the next test for why.
     """
     doc, _, _ = flow
     unmatched = [
@@ -151,7 +154,7 @@ def test_a_fail_component_no_match_output_is_routed_not_dropped(flow):
         if "unmatched" in c["selectedRelationships"]
     ]
     assert len(unmatched) == 2, "both lookups must route their misses somewhere"
-    assert all(c["destination"]["name"] == "Rejected rows" for c in unmatched)
+    assert all(c["destination"]["name"] == "Make reject filename unique" for c in unmatched)
 
     for proc in doc["flowContents"]["processors"]:
         if proc["type"].endswith("LookupRecord"):
@@ -159,15 +162,31 @@ def test_a_fail_component_no_match_output_is_routed_not_dropped(flow):
 
 
 def test_every_error_output_reaches_the_reject_sink(flow):
+    """Every dangling output reaches the sink -- through the filename stamp.
+
+    Two different components can both be missing on the SAME source file
+    (e.g. both lookups) and, without the stamp, both write PutFile's
+    Directory/${filename} with "replace" conflict resolution -- the second
+    write silently erases the first's rows, with no error anywhere. Found by
+    `make verify-behavior`, not by reading the property descriptors.
+    """
     doc, _, _ = flow
-    into_rejects = {
-        c["source"]["name"] for c in doc["flowContents"]["connections"]
-        if c["destination"]["name"] == "Rejected rows"
-    }
-    assert into_rejects == {
+    fc = doc["flowContents"]
+    into_stamp = {c["source"]["name"] for c in fc["connections"]
+                  if c["destination"]["name"] == "Make reject filename unique"}
+    assert into_stamp == {
         "Extract Sample Currency Data", "Lookup Currency Key",
         "Lookup Date Key", "Sample OLE DB Destination",
     }
+
+    stamp_to_sink = [c for c in fc["connections"]
+                      if c["source"]["name"] == "Make reject filename unique"]
+    assert len(stamp_to_sink) == 1
+    assert stamp_to_sink[0]["destination"]["name"] == "Rejected rows"
+    assert stamp_to_sink[0]["selectedRelationships"] == ["success"]
+
+    stamp = next(p for p in fc["processors"] if p["name"] == "Make reject filename unique")
+    assert stamp["properties"]["filename"] == "${filename}-${uuid}"
 
 
 def test_every_relationship_is_connected_or_auto_terminated(flow):
