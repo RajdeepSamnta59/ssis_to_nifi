@@ -13,9 +13,11 @@ For the pictures, see [`DIAGRAM.md`](DIAGRAM.md).
 
 ## Status
 
-**Milestone 1 of 5 — the Analyzer works.** It reads genuine Visual Studio
-packages, recovers the data flow graph, resolves column lineage, and reports
-exactly what it can and cannot convert. The Converter and Validator are next.
+**Milestones 1–2 of 5 done.** The Analyzer reads genuine Visual Studio packages,
+recovers the data flow graph, resolves column lineage, and reports exactly what
+it can and cannot convert. The IR round-trips losslessly, so it can be reviewed,
+edited, and fed to the Converter — which is next (M3: emit a `flow.json` NiFi
+accepts).
 
 ```bash
 python3 -m ssis2nifi analyze corpus/packages/L1.dtsx
@@ -44,14 +46,34 @@ coverage: 4/4 convertible, 0 need manual review
 
 ```bash
 make analyze FILE=corpus/packages/L1.dtsx   # the report above
+make ir      FILE=corpus/packages/L1.dtsx   # write out/<pkg>.ir.yaml
 make corpus                                 # run every package, show exit codes
 make test                                   # the suite, in Docker
-python3 -m ssis2nifi analyze <pkg> --json   # the IR instead of the report
 ```
 
-There is no install step and no dependency for `analyze` — it is standard
-library only. `make test` runs pytest in a container because this machine has
-no `pip`.
+`analyze` is standard library only — no install step. `ir` needs PyYAML
+(`requirements.txt`). `make test` runs pytest in a container because this
+machine has no `pip`.
+
+## The IR
+
+`make ir` writes the intermediate representation: an edge-bearing description of
+what the package does, in SSIS's own vocabulary. It is the artifact you hand to
+the person who owns the package and ask *"is this what it does?"* — no NiFi
+knowledge required to answer.
+
+It round-trips losslessly (`load(dump(pkg)) == pkg`, tested over the whole
+corpus), so a reviewed and hand-edited IR can drive the Converter.
+
+Two digests, because they answer different questions:
+
+| digest | answers |
+|---|---|
+| `content_digest` | is this the same package? (everything but where the file came from) |
+| `topology_digest` | is this the same pipeline *shape*? (classes + wiring + branch semantics, no configuration) |
+
+The second exists because of a correction worth knowing about — see
+[`corpus/PROVENANCE.md`](corpus/PROVENANCE.md).
 
 ## Exit codes are a contract
 

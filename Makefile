@@ -11,17 +11,24 @@ CORPUS  := corpus/packages
 
 .DEFAULT_GOAL := help
 
-.PHONY: help analyze corpus test json clean
+.PHONY: help analyze ir corpus test json clean
 
 help:  ## list these targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
+# Exit 3 means "parsed, needs a human" -- a real outcome, not a build failure.
+# Only 4 (refused) should stop make. Anything else propagates unchanged.
 analyze:  ## report one package: make analyze FILE=corpus/packages/L4.dtsx
-	@$(PY) -m ssis2nifi analyze $(FILE)
+	@$(PY) -m ssis2nifi analyze $(FILE); c=$$?; [ $$c -eq 3 ] && exit 0 || exit $$c
 
-json:  ## emit the IR for one package
-	@$(PY) -m ssis2nifi analyze $(FILE) --json
+json:  ## emit the IR as JSON for one package
+	@$(PY) -m ssis2nifi analyze $(FILE) --json; c=$$?; [ $$c -eq 3 ] && exit 0 || exit $$c
+
+ir:  ## write the IR: make ir FILE=corpus/packages/L4.dtsx
+	@mkdir -p out
+	@$(PY) -m ssis2nifi ir $(FILE) -o out/$$(basename $(FILE) .dtsx).ir.yaml; \
+	  c=$$?; [ $$c -eq 3 ] && exit 0 || exit $$c
 
 corpus:  ## run every package and show its exit code
 	@printf "%-34s %-6s %s\n" PACKAGE EXIT RESULT
@@ -33,7 +40,7 @@ corpus:  ## run every package and show its exit code
 
 test:  ## run the suite in Docker
 	@docker run --rm -v "$$PWD":/w -w /w $(PKG) \
-	  sh -c "pip install -q pytest 2>/dev/null && python -m pytest tests/ -q"
+	  sh -c "pip install -q -r requirements-dev.txt 2>/dev/null && python -m pytest tests/ -q"
 
 clean:  ## remove generated output and caches
 	@rm -rf out/* .pytest_cache

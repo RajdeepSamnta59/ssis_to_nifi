@@ -1,14 +1,15 @@
-"""The same package in two SSIS dialects must analyse to the same graph.
+"""Two SSIS dialects, one pipeline shape.
 
-This is the regression test the corpus hands us for free, and it is the one
-that proves the tool is version-agnostic rather than tuned to one file.  If a
-customer's estate mixes SSIS 2008 and 2016 packages -- which every real estate
-does -- this is the property that keeps the converter honest.
+The tool has to be version-agnostic: every real SSIS estate mixes packages
+authored across a decade of SQL Server releases, and a converter that only
+understands the current spelling is useless on half of them.
 
-It compares the *meaning*: component classes, the wiring, and the branch
-semantics of every edge.  It deliberately does NOT compare things that are
-legitimately allowed to differ between versions, such as package format
-version or the raw class-id spelling.
+SCOPE, STATED EXACTLY. These two fixtures are the same tutorial lesson, not the
+same package -- they target different databases and different destination
+tables (see corpus/PROVENANCE.md). So this file compares STRUCTURE only:
+component classes, the wiring, and the branch semantics of each edge. The
+configuration differences are asserted separately, in test_ir_roundtrip.py, so
+that the narrower claim made here cannot quietly widen into an overclaim.
 """
 
 from __future__ import annotations

@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import sys
 
 from .catalog.support import annotate
 from .dtsx.parse import NotADtsxPackage, parse_file
+from .ir import schema
 from .report import graph
 
 EXIT_OK, EXIT_REVIEW, EXIT_REFUSED = 0, 3, 4
@@ -38,6 +40,25 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     return EXIT_OK if pkg.coverage.all_recognised else EXIT_REVIEW
 
 
+def _cmd_ir(args: argparse.Namespace) -> int:
+    """Write the IR. This is the artifact a package owner reviews."""
+    try:
+        pkg = annotate(parse_file(args.package))
+    except NotADtsxPackage as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+
+    text = schema.dump(pkg)
+    if args.out:
+        pathlib.Path(args.out).write_text(text)
+        print(f"wrote {args.out}  ({len(text.splitlines())} lines)", file=sys.stderr)
+        print(f"  content  digest: {schema.content_digest(pkg)[:16]}", file=sys.stderr)
+        print(f"  topology digest: {schema.topology_digest(pkg)[:16]}", file=sys.stderr)
+    else:
+        print(text, end="")
+    return EXIT_OK if pkg.coverage.all_recognised else EXIT_REVIEW
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="ssis2nifi", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -48,6 +69,11 @@ def main(argv: list[str] | None = None) -> int:
     an.add_argument("--json", action="store_true", help="emit the IR instead of the report")
     an.add_argument("--no-graph", action="store_true", help="summary only, no component tree")
     an.set_defaults(func=_cmd_analyze)
+
+    ir = sub.add_parser("ir", help="write the intermediate representation as YAML")
+    ir.add_argument("package")
+    ir.add_argument("-o", "--out", help="file to write (default: stdout)")
+    ir.set_defaults(func=_cmd_ir)
 
     args = ap.parse_args(argv)
     return args.func(args)
