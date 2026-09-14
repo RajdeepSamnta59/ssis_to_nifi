@@ -35,7 +35,11 @@ services:
     properties:
       dbrecord-lookup-dbcp-service: "@service:dbcp:{{ binding_id }}"
       dbrecord-lookup-table-name: "{{ derived.reference_table }}"
-      dbrecord-lookup-lookup-key-column: "{{ derived.join_column }}"
+      # `dbrecord-lookup-key-column`, NOT `dbrecord-lookup-lookup-key-column`.
+      # Both exist on the service; only this one is required, and the other is
+      # rejected as "not a supported property". This is the name NIFI-FLOW's
+      # working flow uses -- changing it was a guess, and it cost a deploy.
+      dbrecord-lookup-key-column: "{{ derived.join_column }}"
       dbrecord-lookup-cache-size: "{{ derived.cache_size }}"
 
 processors:
@@ -85,6 +89,15 @@ diagnostics:
     message: >-
       The reference set is restricted by SqlCommand, but DatabaseRecordLookupService
       reads the whole table. Verify this cannot produce extra matches.
+  - when: "derived.date_key"
+    severity: warn
+    code: LOOKUP_DATE_KEY_CAST
+    message: >-
+      The lookup key is a date/time column. SQL Server implicitly casts a string
+      to date in a WHERE clause; Postgres and most other engines do not, so a
+      retargeted deployment fails with "operator does not exist: date = character
+      varying". Either type the key column as text in the target, or cast in the
+      reference query.
   - when: "derived.composite_key"
     severity: error
     code: LOOKUP_COMPOSITE_KEY

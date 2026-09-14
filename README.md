@@ -13,8 +13,22 @@ For the pictures, see [`DIAGRAM.md`](DIAGRAM.md).
 
 ## Status
 
-**Milestones 1–3 of 5 done. A real SSIS package now becomes a running-shaped
-NiFi flow.**
+**Milestones 1–4 of 5 done. A real SSIS package now becomes a NiFi flow that
+loads real rows.**
+
+```
+$ make convert && make deploy && make feed
+$ make check
+ rows_loaded | rejected
+-------------+----------
+          30 |        8
+```
+
+38 input rows: 30 matched both lookups and landed in the fact table with
+correctly resolved surrogate keys; 8 missed the currency lookup and went to the
+reject sink. Every input row is accounted for — which is the whole point.
+
+Verified end to end against Apache NiFi 1.27.0 and Postgres 16.
 
 ```
 $ make convert && make verify-import
@@ -27,11 +41,41 @@ wrote out/L1.flow.json
 valid: NiFi accepted the flow with no flow-level validation errors
 ```
 
-Verified against Apache NiFi 1.27.0. The check is non-destructive — the flow is
-imported into a new process group and deleted afterwards, so it can run against
-an instance that is already busy.
+`make verify-import` is non-destructive — the flow goes into a new process group
+and is deleted afterwards, so it can run against a busy instance.
 
-Next: M4 (deploy and load real rows) and M5 (the behavioural gate).
+Next: M5, the behavioural gate — diffing the generated flow's output against an
+independent expectation.
+
+## Retargeting is a bindings edit, not a code change
+
+The package targets SQL Server. This deployment targets **Postgres**, and that
+is one file:
+
+```yaml
+db_main:
+  for: "Package.ConnectionManagers[localhost.AdventureWorksDW2014]"
+  db_type: "PostgreSQL"
+  url: "jdbc:postgresql://postgres:5432/ssis2nifi"
+  identifier_case: lower
+```
+
+An SSIS connection manager says *"localhost, AdventureWorksDW2014, Integrated
+Security=SSPI"* — none of which survives a move to NiFi. Windows integrated
+security has no JDBC equivalent. So the package says *which* logical connection
+each component uses, and the binding says what that resolves to at deploy time.
+This is what SSIS project configurations already do.
+
+## Three retarget hazards the tool now reports
+
+Found by deploying, not by reading documentation. Each is a diagnostic the
+converter emits **before** you deploy:
+
+| code | what bites you |
+|---|---|
+| `LOOKUP_DATE_KEY_CAST` | The pipeline carries dates as strings. SQL Server implicitly casts string→date in a `WHERE`; Postgres does not, and the lookup fails with *"operator does not exist: date = character varying"*. |
+| identifier casing | Postgres folds unquoted identifiers to lower case. `[dbo].[NewFactCurrencyRate]` from the `.dtsx` is a different, missing table — the flow deploys cleanly and fails at runtime. |
+| `LOOKUP_FILTERED_REFERENCE` | The SSIS reference query has a `WHERE`, but `DatabaseRecordLookupService` reads the whole table. Extra matches are possible. |
 
 ```bash
 python3 -m ssis2nifi analyze corpus/packages/L1.dtsx

@@ -23,9 +23,25 @@ be generated -- silently, because the property exists and is simply blank.
 
 from __future__ import annotations
 
+import json
+import pathlib
 import re
 
+import yaml
+
 from ..ir.model import Component, Package
+
+_TYPES = yaml.safe_load(
+    (pathlib.Path(__file__).resolve().parents[2] / "catalogue" / "types.yml").read_text()
+)
+
+
+def avro_type(ssis_type: str) -> str:
+    """SSIS type (short name or OLE DB numeric code) -> Avro type name."""
+    key = (ssis_type or "").strip()
+    if key in _TYPES["numeric_codes"]:
+        key = _TYPES["numeric_codes"][key]
+    return _TYPES["short"].get(key, {}).get("avro", "string")
 
 # `select * from (select * from [dbo].[DimCurrency]) as refTable where ...`
 # The table is the innermost FROM. Brackets are SQL Server quoting.
@@ -81,6 +97,19 @@ def _lookup(comp: Component) -> dict:
         "returns": returns,
         "cache_size": cache,
         "no_match_fails": props.get("NoMatchBehavior", "0") == "0",
+        # The record pipeline carries dates as strings (types.yml policy), so a
+        # lookup whose key is a date column compares string to date in SQL.
+        # SQL Server casts implicitly; Postgres does not.
+        "date_key": any(
+            _TYPES["short"].get(
+                _TYPES["numeric_codes"].get(col.ssis_type, col.ssis_type), {}
+            ).get("avro") == "string"
+            and _TYPES["short"].get(
+                _TYPES["numeric_codes"].get(col.ssis_type, col.ssis_type), {}
+            ).get("format", "").startswith("yyyy")
+            for port in comp.inputs for col in port.columns
+            if col.properties.get("JoinToReferenceColumn")
+        ),
     }
 
 
@@ -147,15 +176,35 @@ def _flat_file_source(comp: Component, pkg: Package) -> dict:
     body = [d for d in delimiters[:-1]] if len(delimiters) > 1 else delimiters
     distinct = {d for d in body if d}
 
-    header = unescape(cm_props.get("HeaderRowDelimiter", ""))
+    # HeaderRowDelimiter says what a header row WOULD end with, not that one
+    # exists. The real signal is HeaderRowsToSkip, and it is absent from every
+    # package in the corpus -- so these files have no header. Inferring a
+    # header from the delimiter drops the first row of real data.
+    skip = cm_props.get("HeaderRowsToSkip", "0")
+    has_header = skip.isdigit() and int(skip) > 0
     qualifier = unescape(cm_props.get("TextQualifier", ""))
+
+    # With no header there is no other source of column names, so the schema
+    # comes from the connection manager. Without it a reader would name the
+    # fields after the first row of data.
+    columns = [
+        {"name": col.get("ObjectName", ""), "type": avro_type(col.get("DataType", ""))}
+        for col in (cm.columns if cm else [])
+        if col.get("ObjectName")
+    ]
 
     return {
         "column_delimiter": next(iter(distinct), ","),
         "per_column_delimiters": len(distinct) > 1,
         "row_delimiter": row_delim,
         "row_delimiter_inferred": inferred,
-        "has_header": "true" if header else "false",
+        "has_header": "true" if has_header else "false",
+        "columns": columns,
+        "avro_schema": json.dumps({
+            "type": "record",
+            "name": "flatfile",
+            "fields": [{"name": c["name"], "type": ["null", c["type"]]} for c in columns],
+        }),
         "charset": "windows-1252" if cm_props.get("CodePage") == "1252" else "UTF-8",
         # SSIS writes the literal "<none>" (escaped) when there is no qualifier.
         "text_qualifier": "" if qualifier in ("", "<none>") else qualifier,

@@ -112,6 +112,24 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     return EXIT_REFUSED
 
 
+def _cmd_deploy(args: argparse.Namespace) -> int:
+    """Import, inject credentials from the environment, enable, start."""
+    from .deploy.provision import MissingSecret, deploy
+
+    try:
+        result = deploy(args.flow, args.nifi, args.group_name, start=not args.no_start)
+    except MissingSecret as exc:
+        print(f"refusing to deploy: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+
+    print(f"deployed {result['group_name']!r} ({result['group_id']})")
+    print(f"  {result['secrets_injected']} sensitive propert(ies) injected from the environment")
+    for name, state in sorted(result["services"].items()):
+        print(f"  service {name}: {state}")
+    print(f"  flow {'started' if result['started'] else 'left stopped'}")
+    return EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="ssis2nifi", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -141,6 +159,13 @@ def main(argv: list[str] | None = None) -> int:
     vf.add_argument("--keep", action="store_true", help="leave the group on the canvas")
     vf.add_argument("--settle", type=float, default=15.0, help="seconds to wait for validation")
     vf.set_defaults(func=_cmd_verify)
+
+    dp = sub.add_parser("deploy", help="import a flow into NiFi and start it")
+    dp.add_argument("flow")
+    dp.add_argument("--nifi", default="http://localhost:8080")
+    dp.add_argument("--group-name")
+    dp.add_argument("--no-start", action="store_true", help="import but leave stopped")
+    dp.set_defaults(func=_cmd_deploy)
 
     args = ap.parse_args(argv)
     return args.func(args)

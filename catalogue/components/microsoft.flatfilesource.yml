@@ -23,11 +23,22 @@ services:
     kind: CSVReader
     name: "SourceReader"
     properties:
-      schema-access-strategy: infer-schema
-      csvutils-value-separator: "{{ derived.column_delimiter }}"
-      csvutils-first-line-is-header: "{{ derived.has_header }}"
-      csvutils-quote-char: '"'
-      csvutils-escape-char: "\\"
+      # Explicit schema, not infer-schema. These files have no header row
+      # (HeaderRowsToSkip is absent), so inference would name every field
+      # after the first row of DATA and lose that row.
+      schema-access-strategy: schema-text-property
+      schema-text: "{{ derived.avro_schema }}"
+      # CSVReader's required properties are its DISPLAY names. The
+      # `csvutils-*` forms also exist but are optional legacy aliases, and
+      # NiFi rejects them as "not a supported property" -- so a reader
+      # configured with them never enables. Harvested from a live instance's
+      # /controller-services/{id} descriptors, not from documentation.
+      CSV Format: custom
+      Value Separator: "{{ derived.column_delimiter }}"
+      Record Separator: "{{ derived.row_delimiter }}"
+      Skip Header Line: "{{ derived.has_header }}"
+      Quote Character: '"'
+      Escape Character: "\\"
       csvutils-character-set: "{{ derived.charset }}"
   - key: "writer"
     kind: JsonRecordSetWriter

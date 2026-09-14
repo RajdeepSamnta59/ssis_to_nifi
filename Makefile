@@ -9,11 +9,13 @@ PKG     ?= python:3.12-slim
 FILE     ?= corpus/packages/L1.dtsx
 BINDINGS ?= bindings/L1.bindings.yml
 NIFI     ?= http://localhost:8080
+NIFI_CONTAINER ?= nifi-engine
+WAREHOUSE ?= nifi-warehouse
 CORPUS  := corpus/packages
 
 .DEFAULT_GOAL := help
 
-.PHONY: help analyze ir convert verify-import corpus test json clean
+.PHONY: help analyze ir convert verify-import deploy check corpus test json clean
 
 help:  ## list these targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
@@ -39,6 +41,16 @@ convert:  ## generate a flow: make convert FILE=... BINDINGS=bindings/L1.binding
 
 verify-import:  ## import the generated flow into a live NiFi and check it is valid
 	@$(PY) -m ssis2nifi verify out/$$(basename $(FILE) .dtsx).flow.json --nifi $(NIFI)
+
+deploy:  ## import into NiFi, inject secrets from the environment, start
+	@$(PY) -m ssis2nifi deploy out/$$(basename $(FILE) .dtsx).flow.json \
+	  --nifi $(NIFI) --group-name ssis2nifi-$$(basename $(FILE) .dtsx)
+
+check:  ## rows loaded vs rejected, after a feed
+	@docker exec -i $(WAREHOUSE) psql -U etl -d ssis2nifi -c \
+	  "select (select count(*) from dbo.newfactcurrencyrate) as rows_loaded;"
+	@docker exec $(NIFI_CONTAINER) sh -c \
+	  'echo "reject files: $$(ls -1 /opt/nifi/data/rejects 2>/dev/null | wc -l)"'
 
 corpus:  ## run every package and show its exit code
 	@printf "%-34s %-6s %s\n" PACKAGE EXIT RESULT

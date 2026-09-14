@@ -71,21 +71,70 @@ def test_each_lookup_gets_its_own_lookup_service(flow):
     services = [s for s in doc["flowContents"]["controllerServices"]
                 if s["type"].endswith("DatabaseRecordLookupService")]
     assert len(services) == 2
+    # Lower-cased because the binding declares identifier_case: lower --
+    # Postgres folds unquoted identifiers, so dbo.DimDate would be "not found".
     tables = {s["properties"]["dbrecord-lookup-table-name"] for s in services}
-    assert tables == {"dbo.DimCurrency", "dbo.DimDate"}
+    assert tables == {"dbo.dimcurrency", "dbo.dimdate"}
 
 
 def test_lookup_key_column_comes_from_the_per_column_property(flow):
-    """JoinToReferenceColumn lives on the input COLUMN, not the component."""
+    """JoinToReferenceColumn lives on the input COLUMN, not the component.
+
+    The property is `dbrecord-lookup-key-column`. Both it and
+    `dbrecord-lookup-lookup-key-column` exist on the service, but only this one
+    is required -- the other is rejected as "not a supported property" and the
+    service never enables. Verified against a live NiFi 1.27.0's descriptors.
+    """
     doc, _, _ = flow
     services = {
         s["properties"]["dbrecord-lookup-table-name"]:
-            s["properties"]["dbrecord-lookup-lookup-key-column"]
+            s["properties"]["dbrecord-lookup-key-column"]
         for s in doc["flowContents"]["controllerServices"]
         if s["type"].endswith("DatabaseRecordLookupService")
     }
-    assert services["dbo.DimCurrency"] == "CurrencyAlternateKey"
-    assert services["dbo.DimDate"] == "FullDateAlternateKey"
+    assert services["dbo.dimcurrency"] == "currencyalternatekey"
+    assert services["dbo.dimdate"] == "fulldatealternatekey"
+
+
+def test_downstream_processors_read_json_not_the_source_format(flow):
+    """A record processor reads what its upstream neighbour WROTE.
+
+    Only the first processor in a chain sees the source file's format; every
+    one after it sees the record writer's JSON. Giving them all the CSV reader
+    makes the second one fail with MalformedRecordException.
+    """
+    doc, _, _ = flow
+    fc = doc["flowContents"]
+    by_id = {p["identifier"]: p for p in fc["processors"]}
+    svc = {s["identifier"]: s for s in fc["controllerServices"]}
+    upstream = {c["destination"]["id"]: c["source"]["id"] for c in fc["connections"]}
+
+    for proc in fc["processors"]:
+        reader_id = proc["properties"].get("record-reader") or \
+                    proc["properties"].get("put-db-record-record-reader")
+        if not reader_id:
+            continue
+        src = by_id.get(upstream.get(proc["identifier"], ""), {})
+        expected_csv = src.get("type", "").endswith("GetFile")
+        is_csv = svc[reader_id]["type"].endswith("CSVReader")
+        assert is_csv == expected_csv, (
+            f"{proc['name']} reads from {src.get('name')} but uses "
+            f"{svc[reader_id]['type'].rsplit('.', 1)[-1]}"
+        )
+
+
+def test_identifiers_are_folded_for_the_target_dialect(flow):
+    """Postgres folds unquoted identifiers; SQL Server does not care.
+
+    `[dbo].[NewFactCurrencyRate]` from the .dtsx is a different -- missing --
+    table on Postgres unless it is folded, and the flow deploys cleanly before
+    failing at runtime with "table not found".
+    """
+    doc, _, _ = flow
+    dest = next(p for p in doc["flowContents"]["processors"]
+                if p["type"].endswith("PutDatabaseRecord"))
+    assert dest["properties"]["put-db-record-table-name"] == "newfactcurrencyrate"
+    assert dest["properties"]["put-db-record-schema-name"] == "dbo"
 
 
 # --- safety property 1: no silent row loss -------------------------------

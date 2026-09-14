@@ -127,3 +127,17 @@ service_api_bundle:
   group: org.apache.nifi
   artifact: nifi-standard-services-api-nar
   version: "1.27.0"
+
+# Properties whose values are DATABASE IDENTIFIERS (table, schema, column).
+#
+# Identifier casing is dialect-specific and it silently breaks a retarget:
+# SQL Server is case-insensitive, while Postgres folds unquoted identifiers to
+# lower case, so `dbo.NewFactCurrencyRate` from the .dtsx becomes "table not
+# found" against a Postgres target. A binding declares `identifier_case` and
+# these are the properties it applies to.
+identifier_properties:
+  - put-db-record-table-name
+  - put-db-record-schema-name
+  - put-db-record-update-keys
+  - dbrecord-lookup-table-name
+  - dbrecord-lookup-key-column

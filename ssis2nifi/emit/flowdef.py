@@ -136,6 +136,22 @@ class _Builder:
             raise EmitError(f"no processor type registered for {kind!r} in bundles.yml")
         return spec["type"], self._bundle(spec["bundle"])
 
+    def _case_identifiers(self, props: dict, context: dict) -> None:
+        """Fold database identifiers to the target's convention.
+
+        `dbo.NewFactCurrencyRate` is the same table as `dbo.newfactcurrencyrate`
+        on SQL Server and a different (missing) one on Postgres. The binding
+        says which convention the target uses; without this a retargeted flow
+        deploys cleanly and then fails at runtime with "table not found".
+        """
+        case = (context.get("binding") or {}).get("identifier_case", "preserve")
+        if case not in ("lower", "upper"):
+            return
+        fold = str.lower if case == "lower" else str.upper
+        for name in self.bundles.get("identifier_properties", []):
+            if name in props and isinstance(props[name], str) and props[name]:
+                props[name] = fold(props[name])
+
     def _apis(self, kind: str) -> list[dict]:
         """The interfaces this service implements.
 
@@ -183,6 +199,7 @@ class _Builder:
                 props[name] = None
             else:
                 props[name] = value
+        self._case_identifiers(props, context)
 
         self.services[key] = {
             "identifier": ident,
@@ -222,6 +239,7 @@ class _Builder:
         ptype, bundle = self._proc_type(spec["kind"])
         ident = _ident("processor", comp.ref_id, spec["id"])
         props = {n: _expand(v, context) for n, v in (spec.get("properties") or {}).items()}
+        self._case_identifiers(props, context)
 
         self.processors.append({
             "identifier": ident,
@@ -311,6 +329,22 @@ def build(pkg: Package, bindings: dict, group_name: str | None = None) -> dict:
                 "binding_id": binding_id,
                 "rule_id": recipe.get("rule_id", "?"),
             }
+
+            # Recipe diagnostics: things the rule author knew could go wrong
+            # with this component but which only a real value can decide.
+            for diag in recipe.get("diagnostics", []):
+                cond = diag.get("when", "")
+                fired = False
+                if "==" in cond:
+                    lhs, _, rhs = cond.partition("==")
+                    fired = str(_lookup_path(context, lhs.strip())) == rhs.strip().strip("'\"")
+                elif cond:
+                    fired = bool(_lookup_path(context, cond.strip()))
+                if fired:
+                    b.notes.append(
+                        f"[{diag.get('severity', 'info')}] {diag.get('code')} "
+                        f"({comp.name}): {' '.join(diag.get('message', '').split())}"
+                    )
 
             for spec in recipe.get("services", []):
                 b._service(spec, context)
@@ -446,6 +480,51 @@ def build(pkg: Package, bindings: dict, group_name: str | None = None) -> dict:
             b.notes.append(
                 f"{proc['name']!r}: auto-terminated {', '.join(missing)} "
                 "(no destination in the source package)"
+            )
+
+    # --- the reader depends on POSITION, not on the component ------------
+    #
+    # A record processor reads whatever its upstream neighbour wrote. Only the
+    # first one in a chain sees the source file's own format; every one after
+    # it sees the record writer's output, which is JSON. Giving them all the
+    # source reader makes the second processor try to parse JSON as CSV and
+    # fail with "Could not determine schema ... MalformedRecordException".
+    #
+    # So: processors fed directly by the source adapter keep the source
+    # reader; everything downstream is switched to a JSON reader that matches
+    # the writer.
+    source_procs = {
+        b.proc_ids[(comp.id, spec["id"])]
+        for df in pkg.dataflows
+        for comp in df.components
+        if not comp.inputs and b.recipes.get(comp.class_id)
+        for spec in b.recipes[comp.class_id].get("processors", [])
+        if (comp.id, spec["id"]) in b.proc_ids
+    }
+    downstream: dict[str, str] = {}
+    for conn in b.connections:
+        downstream[conn["destination"]["id"]] = conn["source"]["id"]
+
+    READER_PROPS = ("record-reader", "put-db-record-record-reader")
+    needs_json = [
+        p for p in b.processors
+        if any(k in p["properties"] for k in READER_PROPS)
+        and downstream.get(p["identifier"]) not in source_procs
+    ]
+    if needs_json:
+        json_reader = b._service(
+            {"key": "stream_reader", "kind": "JsonTreeReader", "name": "StreamReader",
+             "properties": {"schema-access-strategy": "infer-schema"}},
+            {"node": {}, "derived": {}, "properties": {}, "binding": {},
+             "binding_id": "", "rule_id": "internal"},
+        )
+        for proc in needs_json:
+            for key in READER_PROPS:
+                if key in proc["properties"]:
+                    proc["properties"][key] = json_reader
+            b.notes.append(
+                f"{proc['name']!r}: reads JSON from an upstream record processor, "
+                "so it uses the stream reader rather than the source-format reader"
             )
 
     b._resolve_services()
