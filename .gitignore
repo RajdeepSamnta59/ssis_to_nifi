@@ -3,3 +3,9 @@ __pycache__/
 .pytest_cache/
 out/
 .venv/
+.env
+drivers/*.jar
+data/landing/*
+data/rejects/*
+!data/landing/.gitkeep
+!data/rejects/.gitkeep

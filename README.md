@@ -9,6 +9,16 @@ ad-hoc AI translation cannot tell you where it guessed.
 
 For the pictures, see [`DIAGRAM.md`](DIAGRAM.md).
 
+## Running it
+
+This repo owns its own NiFi + Postgres — nothing else needs to be running or
+cloned first.
+
+```bash
+make setup   # once: .env + the Postgres JDBC driver
+make up      # starts NiFi (localhost:8081) + Postgres (localhost:5435, db ssis2nifi)
+```
+
 ---
 
 ## Status
@@ -145,6 +155,7 @@ coverage: 4/4 convertible, 0 need manual review
 ## Commands
 
 ```bash
+make up                                     # this repo's own NiFi + Postgres (make setup first, once)
 make analyze FILE=corpus/packages/L1.dtsx   # the report above
 make ir      FILE=corpus/packages/L1.dtsx   # write out/<pkg>.ir.yaml
 make convert FILE=corpus/packages/L1.dtsx   # write out/<pkg>.flow.json
@@ -267,6 +278,9 @@ Both are refused with a message naming the actual problem.
 
 ## Related
 
-- `~/Desktop/NIFI-FLOW` — the hand-built reference implementation, and the
-  source of every property key used here. Its comparison harness becomes this
-  tool's behavioural gate.
+- `~/Desktop/NIFI-FLOW` — a separate, hand-built reference implementation of a
+  different pipeline. Its proven-working NiFi property keys informed the
+  catalogue here early on, but this repo does not depend on it, import from
+  it, or need it running — `make up` above is this tool's own stack, and
+  `make verify-behavior` is this tool's own behavioural gate, independent of
+  NIFI-FLOW's comparison harness.

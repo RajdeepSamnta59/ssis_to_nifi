@@ -8,23 +8,47 @@ PY      ?= python3
 PKG     ?= python:3.12-slim
 FILE     ?= corpus/packages/L1.dtsx
 BINDINGS ?= bindings/L1.bindings.yml
-NIFI     ?= http://localhost:8080
-NIFI_CONTAINER ?= nifi-engine
-WAREHOUSE ?= nifi-warehouse
+# This repo's OWN stack (docker-compose.yml) -- 8081/5435, not NIFI-FLOW's
+# 8080/5433, so the two can never collide even if both happen to be up.
+NIFI     ?= http://localhost:8081
+NIFI_CONTAINER ?= ssis2nifi-engine
+WAREHOUSE ?= ssis2nifi-warehouse
 CORPUS  := corpus/packages
-# Host paths the two bind-mounted directories `bindings/L1.bindings.yml` and
-# the reject sink resolve to -- see NIFI-FLOW's docker-compose.yml (./data
-# maps to /opt/nifi/data), not something ssis2nifi owns or starts.
-LANDING  ?= $(HOME)/Desktop/NIFI-FLOW/data/ssis2nifi/landing
-REJECTS  ?= $(HOME)/Desktop/NIFI-FLOW/data/rejects
+# Bind-mounted straight from this repo's own docker-compose.yml -- ./data,
+# not another project's.
+LANDING  ?= $(PWD)/data/landing
+REJECTS  ?= $(PWD)/data/rejects
 
 .DEFAULT_GOAL := help
 
-.PHONY: help analyze ir convert verify-import deploy check verify-behavior corpus test json clean
+.PHONY: help setup up down ps logs analyze ir convert verify-import deploy check verify-behavior corpus test json clean
 
 help:  ## list these targets
 	@grep -hE '^[a-z-]+:.*?##' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+setup:  ## first-time only: .env + JDBC driver
+	@test -f .env || (cp .env.example .env && echo "created .env")
+	@test -f drivers/postgresql.jar || ( \
+	  echo "fetching Postgres JDBC driver..." && \
+	  curl -sSL -o drivers/postgresql.jar \
+	    https://repo1.maven.org/maven2/org/postgresql/postgresql/42.7.4/postgresql-42.7.4.jar )
+	@echo "ready -- now run: make up"
+
+up: setup  ## start this repo's OWN NiFi + Postgres (no other folder involved)
+	docker compose up -d
+	@echo "waiting for NiFi to answer..."
+	@for i in $$(seq 1 60); do \
+	  curl -sf $(NIFI)/nifi-api/system-diagnostics >/dev/null 2>&1 && break; \
+	  sleep 2; \
+	done
+	@echo "up: NiFi at $(NIFI), Postgres at localhost:5435 (db ssis2nifi, user etl)"
+
+down:  ## stop this stack, keep the database volume
+	docker compose down
+
+ps:  ## this repo's own containers only
+	docker compose ps
 
 # Exit 3 means "parsed, needs a human" -- a real outcome, not a build failure.
 # Only 4 (refused) should stop make. Anything else propagates unchanged.
@@ -47,8 +71,10 @@ convert:  ## generate a flow: make convert FILE=... BINDINGS=bindings/L1.binding
 verify-import:  ## import the generated flow into a live NiFi and check it is valid
 	@$(PY) -m ssis2nifi verify out/$$(basename $(FILE) .dtsx).flow.json --nifi $(NIFI)
 
-deploy:  ## import into NiFi, inject secrets from the environment, start
-	@$(PY) -m ssis2nifi deploy out/$$(basename $(FILE) .dtsx).flow.json \
+deploy:  ## import into NiFi, inject secrets from .env, start
+	@set -a; . ./.env; set +a; \
+	SSIS2NIFI_DB_MAIN_PASSWORD="$$POSTGRES_PASSWORD" $(PY) -m ssis2nifi deploy \
+	  out/$$(basename $(FILE) .dtsx).flow.json \
 	  --nifi $(NIFI) --group-name ssis2nifi-$$(basename $(FILE) .dtsx)
 
 check:  ## rows loaded vs rejected, after a feed
